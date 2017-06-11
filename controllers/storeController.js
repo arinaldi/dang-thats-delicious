@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const Store = mongoose.model('Store');
+const User = mongoose.model('User');
 const multer = require('multer');
 const jimp = require('jimp');
 const uuid = require('uuid');
@@ -47,9 +48,25 @@ exports.createStore = async (req, res) => {
 };
 
 exports.getStores = async (req, res) => {
-  const stores = await Store.find();
+  const page = req.params.page || 1;
+  const limit = 6;
+  const skip = (page * limit) - limit;
 
-  res.render('stores', { title: 'Stores', stores });
+  const storesPromise = Store
+    .find()
+    .skip(skip)
+    .limit(limit)
+    .sort({ created: 'desc' });
+  
+  const countPromise = Store.count();
+  const [stores, count] = await Promise.all([storesPromise, countPromise]);
+  const pages = Math.ceil(count / limit);
+  if (!stores.length && skip) {
+    req.flash('info', `Page ${page} does not exist. Redirected to page ${pages}.`);
+    res.redirect(`/stores/page/${pages}`);
+    return;
+  }
+  res.render('stores', { title: 'Stores', stores, page, pages, count });
 };
 
 const confirmOwner = (store, user) => {
@@ -75,7 +92,7 @@ exports.updateStore = async (req, res) => {
 };
 
 exports.getStoreBySlug = async (req, res, next) => {
-  const store = await Store.findOne({ slug: req.params.slug }).populate('author');
+  const store = await Store.findOne({ slug: req.params.slug }).populate('author reviews');
   if (!store) return next();
   res.render('store', { store, title: store.name });
 };
@@ -106,4 +123,53 @@ exports.searchStores = async (req, res) => {
   .limit(5);
 
   res.json(stores);
-}
+};
+
+exports.mapStores = async (req, res) => {
+  const { lng, lat } = req.query;
+  const coordinates = [lng, lat].map(parseFloat);
+  const query = {
+    location: {
+      $near: {
+        $geometry: {
+          type: 'Point',
+          coordinates
+        },
+        $maxDistance: 10000
+      }
+    }
+  };
+
+  const stores = await Store
+    .find(query)
+    .select('slug name description location photo')
+    .limit(10);
+  res.json(stores);
+};
+
+exports.mapPage = (req, res) => {
+  res.render('map', { title: 'Map' });
+};
+
+exports.heartStore = async (req, res) => {
+  const hearts = req.user.hearts.map(obj => obj.toString());
+  const operator = hearts.includes(req.params.id) ? '$pull' : '$addToSet';
+  const user = await User
+    .findByIdAndUpdate(req.user._id,
+      { [operator]: { hearts: req.params.id }},
+      { new: true }
+  );
+  res.json(user);
+};
+
+exports.getHearts = async (req, res) => {
+  const stores = await Store.find({
+    _id: { $in: req.user.hearts }
+  });
+  res.render('stores', { title: 'Hearted Stores', stores });
+};
+
+exports.getTopStores = async (req, res) => {
+  const stores = await Store.getTopStores();
+  res.render('topStores', { stores, title: 'Top Stores' });
+};
